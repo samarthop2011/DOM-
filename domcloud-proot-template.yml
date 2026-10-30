@@ -1,0 +1,100 @@
+# ============================================================
+# DOM Cloud — Proot Fake-Root Template (NO Docker)
+# ============================================================
+# Works on Lite / Free plan — does NOT use the docker feature.
+# Creates a full Ubuntu rootfs managed by proot + proot-distro
+# and drops you into a fake-root shell (uid 0 inside the namespace).
+#
+# How to use:
+#   1. Paste this entire file into DOM Cloud → Deployment Script
+#   2. Click Deploy
+#   3. After deploy finishes, SSH in and run:
+#        ~/proot-env/login
+#   4. You will get a # prompt (fake root)
+# ============================================================
+
+source: clear
+
+features: []          # deliberately empty — no docker
+
+commands:
+  # ---------- 1. download static proot binary (aarch64 + x86_64) ----------
+  - |
+    set -e
+    mkdir -p $HOME/proot-env/bin
+    ARCH=$(uname -m)
+    case "$ARCH" in
+      aarch64|arm64)  PROOT_URL="https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-aarch64-static" ;;
+      x86_64|amd64)   PROOT_URL="https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-x86_64-static" ;;
+      *) echo "Unsupported arch: $ARCH"; exit 1 ;;
+    esac
+    curl -sL "$PROOT_URL" -o $HOME/proot-env/bin/proot
+    chmod +x $HOME/proot-env/bin/proot
+    echo "[+] proot binary installed"
+
+  # ---------- 2. download a minimal Ubuntu rootfs ----------
+  - |
+    set -e
+    ROOTFS=$HOME/proot-env/ubuntu
+    if [ ! -d "$ROOTFS/bin" ]; then
+      echo "[*] Downloading Ubuntu 24.04 rootfs (this takes 1-3 min)..."
+      mkdir -p $ROOTFS
+      # Official Ubuntu base rootfs (jammy/noble)
+      curl -sL https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04-base-arm64.tar.gz -o /tmp/ubuntu-rootfs.tar.gz \
+        || curl -sL https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04-base-amd64.tar.gz -o /tmp/ubuntu-rootfs.tar.gz
+      tar -xzf /tmp/ubuntu-rootfs.tar.gz -C $ROOTFS
+      rm -f /tmp/ubuntu-rootfs.tar.gz
+      # minimal DNS + hosts so apt works
+      echo "nameserver 8.8.8.8" > $ROOTFS/etc/resolv.conf
+      echo "127.0.0.1 localhost" > $ROOTFS/etc/hosts
+      echo "[+] Ubuntu rootfs ready"
+    else
+      echo "[*] rootfs already present — skipping download"
+    fi
+
+  # ---------- 3. create convenient login helper ----------
+  - |
+    cat > $HOME/proot-env/login << 'EOF'
+    #!/bin/bash
+    ROOTFS=$HOME/proot-env/ubuntu
+    PROOT=$HOME/proot-env/bin/proot
+    export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    export HOME=/root
+    export TERM=xterm-256color
+    exec $PROOT \
+      -0 \
+      -r "$ROOTFS" \
+      -b /dev \
+      -b /proc \
+      -b /sys \
+      -b /tmp \
+      -b /etc/resolv.conf:/etc/resolv.conf \
+      -w /root \
+      /bin/bash --login
+    EOF
+    chmod +x $HOME/proot-env/login
+    echo "[+] login helper created → ~/proot-env/login"
+
+  # ---------- 4. first-boot package setup inside proot ----------
+  - |
+    $HOME/proot-env/login -c "
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq
+      apt-get install -y -qq curl wget ca-certificates bash-completion vim nano htop
+      echo '=== proot environment ready ==='
+      id
+      uname -a
+    " || true
+
+  # ---------- 5. final message ----------
+  - |
+    echo ""
+    echo "============================================================"
+    echo "  PROOT FAKE-ROOT READY"
+    echo "============================================================"
+    echo "  SSH in and run:"
+    echo "      ~/proot-env/login"
+    echo ""
+    echo "  You will get a # prompt (uid 0 inside the proot)."
+    echo "  This is still FAKE root — same limits as unshare -Ur."
+    echo "============================================================"
